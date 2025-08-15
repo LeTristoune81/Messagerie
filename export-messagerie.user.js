@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Fourmizzz — Export messagerie (UI Zzzelp + Titre local + Participants officiels, optimisé)
+// @name         Fourmizzz — Export messagerie
 // @namespace    https://github.com/LeTristoune81/Messagerie
-// @version      7.10
+// @version      7.11
 // @description  Export messagerie style Zzzelp autonome : titre par conversation, participants officiels (#liste_participants), virgules, saut de ligne, code léger.
 // @match        http://*.fourmizzz.fr/*messagerie.php*
 // @match        https://*.fourmizzz.fr/*messagerie.php*
