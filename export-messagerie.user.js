@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fourmizzz — Export messagerie (UI Zzzelp + Titre local + Participants officiels, optimisé)
 // @namespace    https://github.com/LeTristoune81/Messagerie
-// @version      7.15
-// @description  Export messagerie style Zzzelp autonome : titre par conversation, participants officiels (#liste_participants), virgules, saut de ligne, horodatage colonne droite, code léger.
+// @version      7.16
+// @description  Export messagerie style Zzzelp autonome : titre par conversation, participants officiels (#liste_participants), virgules, saut de ligne, horodatage colonne droite, code léger, anti-doublon.
 // @match        http://*.fourmizzz.fr/*messagerie.php*
 // @match        https://*.fourmizzz.fr/*messagerie.php*
 // @grant        GM_addStyle
@@ -57,6 +57,20 @@ const getPseudoFromHref = href => {
   try { const u = new URL(href, location.href); return decodeURIComponent(u.searchParams.get('Pseudo')||''); }
   catch { const m=/[?&]Pseudo=([^&]+)/.exec(href||''); return m?decodeURIComponent(m[1]):''; }
 };
+
+// -------- helpers anti-doublon --------
+function dedupeWholeRepeat(s) {
+  const t = s.trim();
+  if (!t) return t;
+  const parts = t.split(/\n{2,}/);
+  if (parts.length % 2 === 0) {
+    const mid = parts.length / 2;
+    const first = parts.slice(0, mid).join('\n\n').trim();
+    const second = parts.slice(mid).join('\n\n').trim();
+    if (first && first === second) return first;
+  }
+  return t;
+}
 
 // ----- Titre par conversation -----
 function getConversationTitle(table) {
@@ -129,7 +143,7 @@ function detectAuthor(tr) {
   return '';
 }
 
-// ----- Horodatage colonne droite (préféré) -----
+// ----- Horodatage (colonne droite prioritaire) -----
 function readRightTimestamp(tr) {
   const tds = tr.querySelectorAll('td');
   if (!tds.length) return '';
@@ -207,36 +221,40 @@ function inject(table) {
     let cls = `[center][b]${titre}[/b][/center]\n\nParticipants : ${partsRaw}\n\n`;
 
     rows.forEach(tr => {
-      // Date : privilégie la colonne de droite
       const dateRight = readRightTimestamp(tr);
       const dateInMsg = tr.querySelector('.date_envoi')?.textContent.trim() || '';
       const date = dateRight || dateInMsg;
 
-      // Auteur robuste
       const author = detectAuthor(tr);
       const authorFZ  = author ? `[player]${author}[/player]` : `[b]Système[/b]`;
       const authorCls = author ? `[b]${author}[/b]` : `[b]Système[/b]`;
 
-      // Contenu complet (HTML) pour BBCode
+      // -- Source unique : bloc "message_complet_*" si présent
       const id   = tr.id.replace('message_', '');
       const full = document.getElementById('message_complet_' + id);
-      const html = (full?.innerHTML || $('.message', tr)?.innerHTML || '')
-                    .replace(/<div class="date_envoi">[\s\S]*?<\/div>/, '');
-
-      // ✅ Texte brut : lire préférentiellement le bloc "message_complet" SANS la date
+      let html = '';
       let rawText = '';
       if (full) {
         const clone = full.cloneNode(true);
         const dateDiv = clone.querySelector('.date_envoi');
         if (dateDiv) dateDiv.remove();
         rawText = clone.textContent.trim();
+        html    = clone.innerHTML;
       } else {
-        rawText = $('.message', tr)?.innerText.trim() || '';
+        const msgEl = $('.message', tr);
+        rawText = msgEl?.innerText.trim() || '';
+        html    = msgEl?.innerHTML || '';
+        html = html.replace(/<div class="date_envoi">[\s\S]*?<\/div>/, '');
       }
 
+      // anti-doublon (texte & bbcode)
+      rawText = dedupeWholeRepeat(rawText);
+      let bbF = dedupeWholeRepeat(ze_HTML_to_BBcode(html, true));
+      let bbC = dedupeWholeRepeat(ze_HTML_to_BBcode(html, false));
+
       raw += `${author || 'Système'} ${date}\n\n${rawText}\n\n`;
-      fz  += `${authorFZ} ${date}\n\n${ze_HTML_to_BBcode(html, true)}\n\n[hr]\n`;
-      cls += `${authorCls} ${date}\n\n${ze_HTML_to_BBcode(html, false)}\n\n[hr]\n`;
+      fz  += `${authorFZ} ${date}\n\n${bbF}\n\n[hr]\n`;
+      cls += `${authorCls} ${date}\n\n${bbC}\n\n[hr]\n`;
     });
 
     taRaw.value = raw.trim();
