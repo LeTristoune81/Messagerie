@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fourmizzz — Export messagerie (UI Zzzelp + Titre local + Participants officiels, optimisé)
 // @namespace    https://github.com/LeTristoune81/Messagerie
-// @version      7.12
+// @version      7.13
 // @description  Export messagerie style Zzzelp autonome : titre par conversation, participants officiels (#liste_participants), virgules, saut de ligne, code léger.
 // @match        http://*.fourmizzz.fr/*messagerie.php*
 // @match        https://*.fourmizzz.fr/*messagerie.php*
@@ -15,7 +15,6 @@
 // @updateURL    https://raw.githubusercontent.com/LeTristoune81/Messagerie/main/export-messagerie.user.js
 // ==/UserScript==
 
-// Conversion HTML→BBCode (issu de Zzzelp)
 function ze_HTML_to_BBcode(html, fourmizzz) {
   html = String(html).replace(/\n/g, '');
   if (fourmizzz) {
@@ -38,7 +37,6 @@ function ze_HTML_to_BBcode(html, fourmizzz) {
              .replace(/</g, '[').replace(/>/g, ']');
 }
 
-// Style Zzzelp
 GM_addStyle(`
   .zz-btn { background:#428bca; border:1px solid #357ebd; color:#fff; border-radius:4px; padding:6px 12px;
             font-size:14px; cursor:pointer; transition:background .2s; }
@@ -52,7 +50,6 @@ GM_addStyle(`
   .zz-block textarea { width:100%; height:170px; font-family:monospace; white-space:pre-wrap; }
 `);
 
-// Utils
 const $  = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -61,25 +58,22 @@ const getPseudoFromHref = href => {
   catch { const m=/[?&]Pseudo=([^&]+)/.exec(href||''); return m?decodeURIComponent(m[1]):''; }
 };
 
-// ---- Titre par conversation (local) ----
+// ----- Titre par conversation -----
 function getConversationTitle(table) {
   const contentTR = table.closest('tr.contenu_conversation');
   let row = contentTR ? contentTR.previousElementSibling : null;
   const pick = el => el && el.textContent ? el.textContent.trim() : '';
   const SEL = '.intitule_message, .intitule, .titre_message, .titre, .title, .objet, .objet_message, .nom_conversation, .libelle_conversation';
-
   if (row) {
     let el = row.querySelector(SEL) || row.querySelector('a.intitule_message');
     if (pick(el)) return pick(el);
-    const td = row.querySelector('td[colspan]');
-    if (pick(td)) return pick(td);
+    const td = row.querySelector('td[colspan]'); if (pick(td)) return pick(td);
   }
   let r = row;
   for (let i=0; i<6 && r; i++, r=r?.previousElementSibling) {
     let el = r?.querySelector(SEL) || r?.querySelector('a.intitule_message') || r?.querySelector('b, strong');
     if (pick(el)) return pick(el);
-    const td = r?.querySelector('td[colspan]');
-    if (pick(td)) return pick(td);
+    const td = r?.querySelector('td[colspan]'); if (pick(td)) return pick(td);
   }
   const parentTable = contentTR?.closest('table');
   if (parentTable) {
@@ -89,7 +83,7 @@ function getConversationTitle(table) {
   return 'Sans Objet';
 }
 
-// ---- Participants officiels (depuis #liste_participants_xxx) ----
+// ----- Participants -----
 function findParticipantsCell(table) {
   const contentTR = table.closest('tr.contenu_conversation');
   let row = contentTR ? contentTR.previousElementSibling : null;
@@ -119,27 +113,32 @@ function readParticipantsFromMessages(table) {
   return [...new Set(names)];
 }
 
-// ---- Auteur robuste (gère “a quitté / a rejoint …”) ----
+// ----- Auteur robuste -----
 function detectAuthor(tr) {
-  // 1) Lien vers le joueur (colonne expéditeur)
   let a = tr.querySelector('td.expe a[href*="Membre.php?Pseudo="]');
   if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
-
-  // 2) Lien vers le joueur (dans le corps du message, ex. "Fenrir a quitté la conversation.")
   a = tr.querySelector('td.message a[href*="Membre.php?Pseudo="]');
   if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
-
-  // 3) Texte du message : "Fenrir a quitté la conversation."
   const msg = tr.querySelector('td.message')?.innerText.trim() || '';
   const m = msg.match(/^(.+?)\s+(?:a\s+(?:quitté|rejoint)\s+la conversation|a\s+(?:été\s+)?(?:ajouté|exclu|retiré)(?:e)?(?:\s+\w+)*\s+(?:de|à)\s+la conversation)\b/i);
   if (m && m[1]) return m[1].trim();
-
-  // 4) Faible proba : texte expéditeur qui ne ressemble pas à une date
   const expe = tr.querySelector('td.expe')?.innerText.trim() || '';
   if (expe && !/^\d{1,2}\/\d{1,2}\/\d{2}/.test(expe) && !/(?:\bhier\b|\baujourd)/i.test(expe) && !/\d{1,2}h\d{2}/.test(expe)) {
     return expe;
   }
   return '';
+}
+
+// ----- Horodatage colonne droite (préféré) -----
+function readRightTimestamp(tr) {
+  const tds = tr.querySelectorAll('td');
+  if (!tds.length) return '';
+  const cand = tds[tds.length - 1];
+  const txt = cand?.innerText?.trim() || '';
+  // Exemples valides: "jeudi 13h23", "hier 21h03", "14/08/25 15h59", "aujourd'hui 09h10"
+  const hasDayOrDate = /(lun|mar|mer|jeu|ven|sam|dim|hier|aujourd'hui|\d{1,2}\/\d{1,2}\/\d{2})/i.test(txt);
+  const hasTime = /\d{1,2}h\d{2}/.test(txt);
+  return (hasDayOrDate && hasTime) ? txt : '';
 }
 
 // Voir messages précédents
@@ -164,14 +163,12 @@ function makeCopyBtn(ta, label) {
 function inject(table) {
   if (table.__done) return; table.__done = true;
 
-  // Bouton
   const rBtn = table.insertRow(-1), cBtn = rBtn.insertCell(0);
   cBtn.colSpan = table.rows[0]?.cells.length || 2;
   cBtn.style.textAlign = 'center';
   const btn = Object.assign(document.createElement('button'), { className:'zz-btn', textContent:'Exporter la conversation' });
   cBtn.appendChild(btn);
 
-  // Bloc export (caché)
   const rExp = table.insertRow(-1), cExp = rExp.insertCell(0);
   cExp.colSpan = cBtn.colSpan;
   cExp.innerHTML = `
@@ -193,13 +190,11 @@ function inject(table) {
   btn.onclick = async () => {
     const titre = getConversationTitle(table);
 
-    // Anciens messages et dépliage
     await clickAllVoirPrec(table);
     const rows = $$('tr[id^="message_"]', table).filter(tr => !tr.id.includes('complet'));
     rows.forEach(tr => tr.querySelector('[id*="afficher_complet_"]')?.click());
     await sleep(150);
 
-    // Participants
     let partsCell = findParticipantsCell(table);
     await ensureAllParticipantsShown(partsCell);
     let participants = readParticipantsFromCell(partsCell);
@@ -208,15 +203,17 @@ function inject(table) {
     const partsRaw = participants.join(', ');
     const partsFZ  = participants.map(p => `[player]${p}[/player]`).join(', ');
 
-    // Têtes (ligne vide après Participants)
     let raw = `Titre : ${titre}\n\nParticipants : ${partsRaw}\n\n`;
     let fz  = `[center][b]${titre}[/b][/center]\n\nParticipants : ${partsFZ}\n\n`;
     let cls = `[center][b]${titre}[/b][/center]\n\nParticipants : ${partsRaw}\n\n`;
 
-    // Messages
     rows.forEach(tr => {
-      const date = tr.querySelector('.date_envoi')?.textContent.trim() || '';
-      const author = detectAuthor(tr); // <-- FIX: vrai pseudo, pas l’heure
+      // Date : on préfère la colonne de droite
+      const dateRight = readRightTimestamp(tr);
+      const dateInMsg = tr.querySelector('.date_envoi')?.textContent.trim() || '';
+      const date = dateRight || dateInMsg;
+
+      const author = detectAuthor(tr);
       const authorFZ  = author ? `[player]${author}[/player]` : `[b]Système[/b]`;
       const authorCls = author ? `[b]${author}[/b]` : `[b]Système[/b]`;
 
