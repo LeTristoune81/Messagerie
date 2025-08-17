@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Fourmizzz — Export messagerie
+// @name         Fourmizzz — Export Messagerie 
 // @namespace    https://github.com/LeTristoune81/Messagerie
 // @version      2.0
-// @description  Export messagerie : objet, participants officiels, ouvre “Voir les messages précédents”, anti-doublon (source unique), nettoyage dates internes, gestion départs/rejoins, dates non-gras.
+// @description  Export messagerie : objet, participants officiels, horodatage, départs/rejoins, formats Texte / BBCode Fzzz / Markdown Discord.
 // @match        http://*.fourmizzz.fr/*messagerie.php*
 // @match        https://*.fourmizzz.fr/*messagerie.php*
 // @grant        GM_addStyle
@@ -37,13 +37,33 @@ function ze_HTML_to_BBcode(html, fourmizzz) {
              .replace(/</g, '[').replace(/>/g, ']');
 }
 
+// HTML -> Markdown (Discord)
+// (garde les smileys Fourmizzz comme :pouce:, :smile:, etc.)
+function htmlToMarkdown(html) {
+  return String(html || '')
+    .replace(/<div class="date_envoi">[\s\S]*?<\/div>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<img[^>]*src="images\/smiley\/([^"]+)\.gif"[^>]*>/gi, ':$1:')     // smileys Fzzz -> :nom:
+    .replace(/<img[^>]*src="([^"]+)"[^>]*>/gi, ' ![]($1) ')                     // autres images -> Markdown
+    .replace(/<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)')          // liens
+    .replace(/<(?:strong|b)>([\s\S]*?)<\/(?:strong|b)>/gi, '**$1**')
+    .replace(/<(?:em|i)>([\s\S]*?)<\/(?:em|i)>/gi, '*$1*')
+    .replace(/<u>([\s\S]*?)<\/u>/gi, '__$1__')
+    .replace(/<s>([\s\S]*?)<\/s>/gi, '~~$1~~')
+    .replace(/<blockquote>([\s\S]*?)<\/blockquote>/gi, '> $1')
+    .replace(/<div[^>]*align="center"[^>]*>([\s\S]*?)<\/div>/gi, '---\n$1\n---')
+    .replace(/<\/?[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 GM_addStyle(`
   .zz-btn { background:#428bca; border:1px solid #357ebd; color:#fff; border-radius:4px; padding:6px 12px;
             font-size:14px; cursor:pointer; transition:background .2s; }
   .zz-btn:hover { background:#3071a9; }
   .zz-export { display:none; margin:16px auto; max-width:1100px; }
   .zz-export.visible { display:block; }
-  .zz-actions { margin-bottom:16px; display:flex; gap:8px; }
+  .zz-actions { margin-bottom:16px; display:flex; gap:8px; flex-wrap:wrap; }
   .zz-mini { background:#5cb85c; border:1px solid #4cae4c; color:#fff; border-radius:4px; padding:6px 10px; cursor:pointer; }
   .zz-mini:hover { background:#449d44; }
   .zz-block { margin-bottom:20px; }
@@ -58,49 +78,49 @@ const getPseudoFromHref = href => {
   catch { const m=/[?&]Pseudo=([^&]+)/.exec(href||''); return m?decodeURIComponent(m[1]):''; }
 };
 
-// --- helpers auteur / lignes système ---
+// Détection auteur & lignes système
 const DATE_PREFIX_RE = /^\s*(?:\d{1,2}\/\d{1,2}\/\d{2}\s+à\s+\d{1,2}h\d{2}|(?:lun|mar|mer|jeu|ven|sam|dim|hier|aujourd'hui)\s+\d{1,2}h\d{2}|\d{1,2}h\d{2})\s*/i;
 const SYS_ACTION_RE  = /(a\s+(?:quitté|rejoint)\s+la conversation|a\s+(?:été\s+)?(?:ajouté|exclu|retiré)(?:e)?(?:\s+\w+)*\s+(?:de|à)\s+la conversation)\b/i;
 
 function detectAuthor(tr) {
-  // 1) lien expéditeur
   let a = tr.querySelector('td.expe a[href*="Membre.php?Pseudo="]');
   if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
-  // 2) lien dans le corps
+
   a = tr.querySelector('td.message a[href*="Membre.php?Pseudo="]');
   if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
-  // 3) lignes système : enlever une date en tête puis pseudo avant l’action
+
   const raw = tr.querySelector('td.message')?.innerText || '';
   if (raw) {
     const cleaned = raw.replace(DATE_PREFIX_RE, '');
-    const m = cleaned.match(new RegExp(`^(.+?)\\s+${SYS_ACTION_RE.source}`, 'i'));
+    const m = cleaned.match(/^(.+?)\s+${SYS_ACTION_RE.source}/i);
     if (m && m[1]) return m[1].trim();
   }
-  // 4) fallback
+
   const expe = tr.querySelector('td.expe')?.innerText.trim() || '';
   if (expe && !/\d{1,2}h\d{2}/.test(expe)) return expe;
   return '';
 }
 
-// --- Titre (objet) robuste ---
+// Objet (titre) robuste
 function getConversationTitle(table) {
   const contentTR = table.closest('tr.contenu_conversation');
   let row = contentTR ? contentTR.previousElementSibling : null;
   const pick = el => el && el.textContent ? el.textContent.trim() : '';
   const SEL = '.intitule_message, .intitule, .titre_message, .titre, .title, .objet, .objet_message, .nom_conversation, .libelle_conversation, a.intitule_message, b, strong';
-  // ligne juste au-dessus
+
   if (row) {
     let el = row.querySelector(SEL);
     if (pick(el)) return pick(el);
     const td = row.querySelector('td[colspan]'); if (pick(td)) return pick(td);
   }
-  // remonter quelques lignes
+  // remonte quelques lignes si besoin
   let r = row;
-  for (let i=0; i<6 && r; i++, r=r.previousElementSibling) {
+  for (let i=0; i<6 && r; i++, r=r?.previousElementSibling) {
     let el = r?.querySelector(SEL);
     if (pick(el)) return pick(el);
+    const td = r?.querySelector('td[colspan]'); if (pick(td)) return pick(td);
   }
-  // remonter dans le tableau parent
+  // tente dans le tableau parent
   const parentTable = contentTR?.closest('table');
   if (parentTable) {
     const el = parentTable.querySelector(SEL);
@@ -109,7 +129,7 @@ function getConversationTitle(table) {
   return 'Sans Objet';
 }
 
-// --- Participants officiels (ligne “Participants …”) ---
+// Participants (ligne officielle : id="liste_participants_*")
 function findParticipantsCell(table) {
   const contentTR = table.closest('tr.contenu_conversation');
   let row = contentTR ? contentTR.previousElementSibling : null;
@@ -138,7 +158,7 @@ function readParticipantsFromMessages(table) {
   return [...new Set(names)];
 }
 
-// --- Ouvrir “Voir les messages précédents” ---
+// Ouvre “Voir les messages précédents”
 async function clickAllVoirPrec(table) {
   let btn;
   while ((btn = $$('a', table).find(a => /voir les messages pr[ée]c[ée]dents/i.test(a.textContent)))) {
@@ -146,7 +166,7 @@ async function clickAllVoirPrec(table) {
   }
 }
 
-// --- Injection UI + export ---
+// UI helpers
 function makeCopyBtn(ta, label) {
   const b = document.createElement('button');
   b.className = 'zz-mini'; b.textContent = label;
@@ -157,8 +177,9 @@ function makeCopyBtn(ta, label) {
   return b;
 }
 
+// Injection
 function inject(table) {
-  if (table.__done) return; table.__done = true;
+  if (table.__zzInjected) return; table.__zzInjected = true;
 
   const rBtn = table.insertRow(-1), cBtn = rBtn.insertCell(0);
   cBtn.colSpan = table.rows[0]?.cells.length || 2;
@@ -173,87 +194,70 @@ function inject(table) {
       <div class="zz-actions"></div>
       <div class="zz-block"><strong>Sans BBCode</strong><textarea class="ta-raw" readonly></textarea></div>
       <div class="zz-block"><strong>Avec BBCode (Fourmizzz)</strong><textarea class="ta-fz" readonly></textarea></div>
-      <div class="zz-block"><strong>Avec BBCode (Classique)</strong><textarea class="ta-classic" readonly></textarea></div>
+      <div class="zz-block"><strong>Markdown (Discord)</strong><textarea class="ta-md" readonly></textarea></div>
     </div>`;
   const exp = $('.zz-export', cExp);
-  const taRaw = $('.ta-raw', exp), taFZ = $('.ta-fz', exp), taC = $('.ta-classic', exp);
+  const taRaw = $('.ta-raw', exp), taFZ = $('.ta-fz', exp), taMD = $('.ta-md', exp);
   const actions = $('.zz-actions', exp);
   actions.append(
     makeCopyBtn(taRaw, 'Copier Texte'),
     makeCopyBtn(taFZ, 'Copier BBCode Fzzz'),
-    makeCopyBtn(taC, 'Copier BBCode Classique')
+    makeCopyBtn(taMD, 'Copier Markdown')
   );
 
   btn.onclick = async () => {
-    // Ouvre tous les anciens messages
     await clickAllVoirPrec(table);
 
-    // Objet
+    // Objet + Participants
     const titre = getConversationTitle(table);
-
-    // Participants
     let partsCell = findParticipantsCell(table);
     await ensureAllParticipantsShown(partsCell);
     let participants = readParticipantsFromCell(partsCell);
     if (participants.length === 0) participants = readParticipantsFromMessages(table);
+
     const partsRaw = participants.join(', ');
     const partsFZ  = participants.map(p => `[player]${p}[/player]`).join(', ');
 
-    // Entêtes
-    let raw = `Titre : ${titre}\n\nParticipants : ${partsRaw}\n\n`;
+    // En-têtes
+    let raw = `Objet : ${titre}\n\nParticipants : ${partsRaw}\n\n`;
     let fz  = `[center][b]${titre}[/b][/center]\n\nParticipants : ${partsFZ}\n\n`;
-    let cls = `[center][b]${titre}[/b][/center]\n\nParticipants : ${partsRaw}\n\n`;
+    let md  = `# ${titre}\n\nParticipants : ${partsRaw}\n\n`;
 
-    // Messages (uniquement les lignes de message, pas les *_complet)
+    // Messages (ignorer *_complet)
     const rows = $$('tr[id^="message_"]', table).filter(tr => !tr.id.includes('complet'));
 
-    for (const tr of rows) {
-      // date (on garde la logique existante — non gras)
+    rows.forEach(tr => {
       const date = tr.querySelector('.date_envoi')?.textContent.trim() || '';
       const author = detectAuthor(tr) || 'Système';
 
-      // --- Source unique + nettoyage dates internes ---
       const id = tr.id.replace('message_', '');
-      let full = document.getElementById('message_complet_' + id);
-      let html = '', text = '';
-      if (full) {
-        const clone = full.cloneNode(true);
-        clone.querySelectorAll('.date_envoi').forEach(d => d.remove());
-        html = clone.innerHTML;
-        text = clone.textContent.trim();
-      } else {
-        const msgEl = tr.querySelector('td.message');
-        if (msgEl) {
-          const clone = msgEl.cloneNode(true);
-          clone.querySelectorAll('.date_envoi').forEach(d => d.remove());
-          html = clone.innerHTML;
-          text = clone.textContent.trim();
-        }
-      }
+      const htmlSrc = ($('#message_complet_'+id)?.innerHTML || $('.message', tr)?.innerHTML || '');
+      const html = htmlSrc.replace(/<div class="date_envoi">[\s\S]*?<\/div>/g, '');
+      const text = ($('.message', tr)?.innerText || '').trim();
 
-      // ligne système ?
-      const sysClean = (tr.querySelector('td.message')?.innerText || '').replace(DATE_PREFIX_RE, '');
+      const sysClean = text.replace(DATE_PREFIX_RE, '');
       const mAction = sysClean.match(SYS_ACTION_RE);
 
       if (mAction) {
         const action = mAction[1];
         raw += `${author} ${action}.\n\n`;
         fz  += `[player]${author}[/player] ${action}.\n\n[hr]\n`;
-        cls += `[b]${author}[/b] ${action}.\n\n[hr]\n`;
+        md  += `**${author}** ${action}.\n\n---\n`;
       } else {
         raw += `${author} ${date}\n\n${text}\n\n`;
         fz  += `[player]${author}[/player] ${date}\n\n${ze_HTML_to_BBcode(html, true)}\n\n[hr]\n`;
-        cls += `[b]${author}[/b] ${date}\n\n${ze_HTML_to_BBcode(html, false)}\n\n[hr]\n`;
+        md  += `**${author}** *(${date})*\n${htmlToMarkdown(html)}\n\n---\n`;
       }
-    }
+    });
 
     taRaw.value = raw.trim();
     taFZ.value  = fz.trim();
-    taC.value   = cls.trim();
+    taMD.value  = md.trim();
     exp.classList.add('visible');
   };
 }
 
+// Boot
 function boot() {
   $$('tr.contenu_conversation td > table').forEach(inject);
   new MutationObserver(() => $$('tr.contenu_conversation td > table').forEach(inject))
