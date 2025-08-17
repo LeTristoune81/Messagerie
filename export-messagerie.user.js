@@ -123,4 +123,132 @@ function detectAuthor(tr) {
   const m = msg.match(/^(.+?)\s+(?:a\s+(?:quitté|rejoint)\s+la conversation|a\s+(?:été\s+)?(?:ajouté|exclu|retiré)(?:e)?(?:\s+\w+)*\s+(?:de|à)\s+la conversation)\b/i);
   if (m && m[1]) return m[1].trim();
   const expe = tr.querySelector('td.expe')?.innerText.trim() || '';
-  if (expe && !/^\d{1,2}\/\d{1,2}\/\d{2}/.test(expe) && !/(?:\bhier\b|\baujourd)/i.test
+  if (expe && !/^\d{1,2}\/\d{1,2}\/\d{2}/.test(expe) && !/(?:\bhier\b|\baujourd)/i.test(expe) && !/\d{1,2}h\d{2}/.test(expe)) {
+    return expe;
+  }
+  return '';
+}
+
+// ----- Horodatage colonne droite (préféré) -----
+function readRightTimestamp(tr) {
+  const tds = tr.querySelectorAll('td');
+  if (!tds.length) return '';
+  const cand = tds[tds.length - 1];
+  const txt = cand?.innerText?.trim() || '';
+  const hasDayOrDate = /(lun|mar|mer|jeu|ven|sam|dim|hier|aujourd'hui|\d{1,2}\/\d{1,2}\/\d{2})/i.test(txt);
+  const hasTime = /\d{1,2}h\d{2}/.test(txt);
+  return (hasDayOrDate && hasTime) ? txt : '';
+}
+
+// ----- Voir messages précédents -----
+async function clickAllVoirPrec(table) {
+  let btn;
+  while ((btn = $$('a', table).find(a => /voir les messages pr[ée]c[ée]dents/i.test(a.textContent)))) {
+    btn.click();
+    await sleep(200);
+  }
+}
+function makeCopyBtn(ta, label) {
+  const b = document.createElement('button');
+  b.className = 'zz-mini'; b.textContent = label;
+  b.onclick = () => {
+    if (typeof GM_setClipboard === 'function') GM_setClipboard(ta.value, { type:'text', mimetype:'text/plain' });
+    else { ta.select(); document.execCommand('copy'); }
+  };
+  return b;
+}
+
+// ----- Injection -----
+function inject(table) {
+  if (table.__done) return; table.__done = true;
+
+  const rBtn = table.insertRow(-1), cBtn = rBtn.insertCell(0);
+  cBtn.colSpan = table.rows[0]?.cells.length || 2;
+  cBtn.style.textAlign = 'center';
+  const btn = Object.assign(document.createElement('button'), { className:'zz-btn', textContent:'Exporter la conversation' });
+  cBtn.appendChild(btn);
+
+  const rExp = table.insertRow(-1), cExp = rExp.insertCell(0);
+  cExp.colSpan = cBtn.colSpan;
+  cExp.innerHTML = `
+    <div class="zz-export">
+      <div class="zz-actions"></div>
+      <div class="zz-block"><strong>Sans BBCode</strong><textarea class="ta-raw" readonly></textarea></div>
+      <div class="zz-block"><strong>Avec BBCode (Fourmizzz)</strong><textarea class="ta-fz" readonly></textarea></div>
+      <div class="zz-block"><strong>Avec BBCode (Classique)</strong><textarea class="ta-classic" readonly></textarea></div>
+    </div>`;
+  const exp = $('.zz-export', cExp);
+  const taRaw = $('.ta-raw', exp), taFZ = $('.ta-fz', exp), taC = $('.ta-classic', exp);
+  const actions = $('.zz-actions', exp);
+  actions.append(
+    makeCopyBtn(taRaw, 'Copier Texte'),
+    makeCopyBtn(taFZ, 'Copier BBCode Fzzz'),
+    makeCopyBtn(taC, 'Copier BBCode Classique')
+  );
+
+  btn.onclick = async () => {
+    const titre = getConversationTitle(table);
+
+    await clickAllVoirPrec(table);
+    const rows = $$('tr[id^="message_"]', table).filter(tr => !tr.id.includes('complet'));
+    rows.forEach(tr => tr.querySelector('[id*="afficher_complet_"]')?.click());
+    await sleep(150);
+
+    let partsCell = findParticipantsCell(table);
+    await ensureAllParticipantsShown(partsCell);
+    let participants = readParticipantsFromCell(partsCell);
+    if (participants.length === 0) participants = readParticipantsFromMessages(table);
+
+    const partsRaw = participants.join(', ');
+    const partsFZ  = participants.map(p => `[player]${p}[/player]`).join(', ');
+
+    let raw = `Titre : ${titre}\n\nParticipants : ${partsRaw}\n\n`;
+    let fz  = `[center][b]${titre}[/b][/center]\n\nParticipants : ${partsFZ}\n\n`;
+    let cls = `[center][b]${titre}[/b][/center]\n\nParticipants : ${partsRaw}\n\n`;
+
+    rows.forEach(tr => {
+      // Date : privilégie la colonne de droite
+      const dateRight = readRightTimestamp(tr);
+      const dateInMsg = tr.querySelector('.date_envoi')?.textContent.trim() || '';
+      const date = dateRight || dateInMsg;
+
+      // Auteur robuste
+      const author = detectAuthor(tr);
+      const authorFZ  = author ? `[player]${author}[/player]` : `[b]Système[/b]`;
+      const authorCls = author ? `[b]${author}[/b]` : `[b]Système[/b]`;
+
+      // Contenu complet (HTML) pour BBCode
+      const id   = tr.id.replace('message_', '');
+      const full = document.getElementById('message_complet_' + id);
+      const html = (full?.innerHTML || $('.message', tr)?.innerHTML || '')
+                    .replace(/<div class="date_envoi">[\s\S]*?<\/div>/, '');
+
+      // ✅ Texte brut : lire préférentiellement le bloc "message_complet" SANS la date
+      let rawText = '';
+      if (full) {
+        const clone = full.cloneNode(true);
+        const dateDiv = clone.querySelector('.date_envoi');
+        if (dateDiv) dateDiv.remove();
+        rawText = clone.textContent.trim();
+      } else {
+        rawText = $('.message', tr)?.innerText.trim() || '';
+      }
+
+      raw += `${author || 'Système'} ${date}\n\n${rawText}\n\n`;
+      fz  += `${authorFZ} ${date}\n\n${ze_HTML_to_BBcode(html, true)}\n\n[hr]\n`;
+      cls += `${authorCls} ${date}\n\n${ze_HTML_to_BBcode(html, false)}\n\n[hr]\n`;
+    });
+
+    taRaw.value = raw.trim();
+    taFZ.value  = fz.trim();
+    taC.value   = cls.trim();
+    exp.classList.add('visible');
+  };
+}
+
+function boot() {
+  $$('tr.contenu_conversation td > table').forEach(inject);
+  new MutationObserver(() => $$('tr.contenu_conversation td > table').forEach(inject))
+    .observe(document.body, { childList: true, subtree: true });
+}
+document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot();
