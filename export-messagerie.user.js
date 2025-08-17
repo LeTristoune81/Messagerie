@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fourmizzz — Export messagerie (UI Zzzelp + Titre local + Participants officiels, optimisé)
 // @namespace    https://github.com/LeTristoune81/Messagerie
-// @version      7.10
-// @description  Export messagerie style Zzzelp autonome : titre par conversation, participants officiels (#liste_participants), virgules, saut de ligne, code léger.
+// @version      7.16
+// @description  Export messagerie style Zzzelp autonome : titre par conversation, participants officiels (#liste_participants), virgules, saut de ligne, horodatage colonne droite, sans doublons.
 // @match        http://*.fourmizzz.fr/*messagerie.php*
 // @match        https://*.fourmizzz.fr/*messagerie.php*
 // @grant        GM_addStyle
@@ -137,6 +137,33 @@ function makeCopyBtn(ta, label) {
   return b;
 }
 
+// ---- Auteur robuste (gère “a quitté / a rejoint …”) ----
+function detectAuthor(tr) {
+  let a = tr.querySelector('td.expe a[href*="Membre.php?Pseudo="]');
+  if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
+  a = tr.querySelector('td.message a[href*="Membre.php?Pseudo="]');
+  if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
+  const msg = tr.querySelector('td.message')?.innerText.trim() || '';
+  const m = msg.match(/^(.+?)\s+(?:a\s+(?:quitté|rejoint)\s+la conversation|a\s+(?:été\s+)?(?:ajouté|exclu|retiré)(?:e)?(?:\s+\w+)*\s+(?:de|à)\s+la conversation)\b/i);
+  if (m && m[1]) return m[1].trim();
+  const expe = tr.querySelector('td.expe')?.innerText.trim() || '';
+  if (expe && !/^\d{1,2}\/\d{1,2}\/\d{2}/.test(expe) && !/(?:\bhier\b|\baujourd)/i.test(expe) && !/\d{1,2}h\d{2}/.test(expe)) {
+    return expe;
+  }
+  return '';
+}
+
+// ---- Horodatage colonne droite (préféré) ----
+function readRightTimestamp(tr) {
+  const tds = tr.querySelectorAll('td');
+  if (!tds.length) return '';
+  const cand = tds[tds.length - 1];
+  const txt = cand?.innerText?.trim() || '';
+  const hasDayOrDate = /(lun|mar|mer|jeu|ven|sam|dim|hier|aujourd'hui|\d{1,2}\/\d{1,2}\/\d{2})/i.test(txt);
+  const hasTime = /\d{1,2}h\d{2}/.test(txt);
+  return (hasDayOrDate && hasTime) ? txt : '';
+}
+
 // Injection
 function inject(table) {
   if (table.__done) return; table.__done = true;
@@ -180,7 +207,9 @@ function inject(table) {
     let partsCell = findParticipantsCell(table);
     await ensureAllParticipantsShown(partsCell);
     let participants = readParticipantsFromCell(partsCell);
-    if (participants.length === 0) participants = readParticipantsFromMessages(table);
+    if (participants.length === 0) {
+      participants = readParticipantsFromMessages(table);
+    }
 
     const partsRaw = participants.join(', ');
     const partsFZ  = participants.map(p => `[player]${p}[/player]`).join(', ');
@@ -192,17 +221,36 @@ function inject(table) {
 
     // Messages
     rows.forEach(tr => {
-      const date = tr.querySelector('.date_envoi')?.textContent.trim() || '';
-      const link = tr.querySelector('td.expe a[href*="Pseudo="]');
-      const author = link ? getPseudoFromHref(link.getAttribute('href')) : tr.querySelector('td.expe')?.innerText.trim();
-      const id = tr.id.replace('message_', '');
-      const html = ( $('#message_complet_'+id)?.innerHTML || $('.message', tr)?.innerHTML || '' )
-                    .replace(/<div class="date_envoi">[\s\S]*?<\/div>/, '');
-      const text = $('.message', tr)?.innerText.trim() || '';
+      // Date : on préfère la colonne de droite
+      const dateRight = readRightTimestamp(tr);
+      const dateInMsg = tr.querySelector('.date_envoi')?.textContent.trim() || '';
+      const date = dateRight || dateInMsg;
 
-      raw += `${author} ${date}\n\n${text}\n\n`;
-      fz  += `[player]${author}[/player] [b]${date}[/b]\n\n${ze_HTML_to_BBcode(html, true)}\n\n[hr]\n`;
-      cls += `[b]${author}[/b] [b]${date}[/b]\n\n${ze_HTML_to_BBcode(html, false)}\n\n[hr]\n`;
+      // Auteur
+      const author = detectAuthor(tr);
+      const authorFZ  = author ? `[player]${author}[/player]` : `[b]Système[/b]`;
+      const authorCls = author ? `[b]${author}[/b]` : `[b]Système[/b]`;
+
+      // Source unique : bloc "message_complet_*" si présent (sans la date) — évite tout doublon
+      const id   = tr.id.replace('message_', '');
+      const full = document.getElementById('message_complet_' + id);
+      let html = '';
+      let rawText = '';
+      if (full) {
+        const clone = full.cloneNode(true);
+        const dateDiv = clone.querySelector('.date_envoi');
+        if (dateDiv) dateDiv.remove();
+        rawText = clone.textContent.trim();
+        html    = clone.innerHTML;
+      } else {
+        const msgEl = $('.message', tr);
+        rawText = msgEl?.innerText.trim() || '';
+        html    = (msgEl?.innerHTML || '').replace(/<div class="date_envoi">[\s\S]*?<\/div>/, '');
+      }
+
+      raw += `${author || 'Système'} ${date}\n\n${rawText}\n\n`;
+      fz  += `${authorFZ} ${date}\n\n${ze_HTML_to_BBcode(html, true)}\n\n[hr]\n`;
+      cls += `${authorCls} ${date}\n\n${ze_HTML_to_BBcode(html, false)}\n\n[hr]\n`;
     });
 
     taRaw.value = raw.trim();
