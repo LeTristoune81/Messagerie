@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Fourmizzz — Export messagerie (UI Zzzelp + Titre + Participants + horodatage + départs/rejoins)
+// @name         Fourmizzz — Export messagerie
 // @namespace    https://github.com/LeTristoune81/Messagerie
 // @version      2.0
 // @description  Export messagerie : objet, participants officiels, ouvre “Voir les messages précédents”, anti-doublon (source unique), nettoyage dates internes, gestion départs/rejoins, dates non-gras.
