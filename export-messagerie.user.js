@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fourmizzz — Export messagerie (UI Zzzelp + Titre local + Participants officiels, optimisé)
 // @namespace    https://github.com/LeTristoune81/Messagerie
-// @version      7.12
+// @version      7.10
 // @description  Export messagerie style Zzzelp autonome : titre par conversation, participants officiels (#liste_participants), virgules, saut de ligne, code léger.
 // @match        http://*.fourmizzz.fr/*messagerie.php*
 // @match        https://*.fourmizzz.fr/*messagerie.php*
@@ -119,29 +119,6 @@ function readParticipantsFromMessages(table) {
   return [...new Set(names)];
 }
 
-// ---- Auteur robuste (gère “a quitté / a rejoint …”) ----
-function detectAuthor(tr) {
-  // 1) Lien vers le joueur (colonne expéditeur)
-  let a = tr.querySelector('td.expe a[href*="Membre.php?Pseudo="]');
-  if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
-
-  // 2) Lien vers le joueur (dans le corps du message, ex. "Fenrir a quitté la conversation.")
-  a = tr.querySelector('td.message a[href*="Membre.php?Pseudo="]');
-  if (a) return getPseudoFromHref(a.getAttribute('href')) || a.textContent.trim();
-
-  // 3) Texte du message : "Fenrir a quitté la conversation."
-  const msg = tr.querySelector('td.message')?.innerText.trim() || '';
-  const m = msg.match(/^(.+?)\s+(?:a\s+(?:quitté|rejoint)\s+la conversation|a\s+(?:été\s+)?(?:ajouté|exclu|retiré)(?:e)?(?:\s+\w+)*\s+(?:de|à)\s+la conversation)\b/i);
-  if (m && m[1]) return m[1].trim();
-
-  // 4) Faible proba : texte expéditeur qui ne ressemble pas à une date
-  const expe = tr.querySelector('td.expe')?.innerText.trim() || '';
-  if (expe && !/^\d{1,2}\/\d{1,2}\/\d{2}/.test(expe) && !/(?:\bhier\b|\baujourd)/i.test(expe) && !/\d{1,2}h\d{2}/.test(expe)) {
-    return expe;
-  }
-  return '';
-}
-
 // Voir messages précédents
 async function clickAllVoirPrec(table) {
   let btn;
@@ -216,18 +193,16 @@ function inject(table) {
     // Messages
     rows.forEach(tr => {
       const date = tr.querySelector('.date_envoi')?.textContent.trim() || '';
-      const author = detectAuthor(tr); // <-- FIX: vrai pseudo, pas l’heure
-      const authorFZ  = author ? `[player]${author}[/player]` : `[b]Système[/b]`;
-      const authorCls = author ? `[b]${author}[/b]` : `[b]Système[/b]`;
-
-      const id   = tr.id.replace('message_', '');
+      const link = tr.querySelector('td.expe a[href*="Pseudo="]');
+      const author = link ? getPseudoFromHref(link.getAttribute('href')) : tr.querySelector('td.expe')?.innerText.trim();
+      const id = tr.id.replace('message_', '');
       const html = ( $('#message_complet_'+id)?.innerHTML || $('.message', tr)?.innerHTML || '' )
                     .replace(/<div class="date_envoi">[\s\S]*?<\/div>/, '');
       const text = $('.message', tr)?.innerText.trim() || '';
 
-      raw += `${author || 'Système'} ${date}\n\n${text}\n\n`;
-      fz  += `${authorFZ} [b]${date}[/b]\n\n${ze_HTML_to_BBcode(html, true)}\n\n[hr]\n`;
-      cls += `${authorCls} [b]${date}[/b]\n\n${ze_HTML_to_BBcode(html, false)}\n\n[hr]\n`;
+      raw += `${author} ${date}\n\n${text}\n\n`;
+      fz  += `[player]${author}[/player] [b]${date}[/b]\n\n${ze_HTML_to_BBcode(html, true)}\n\n[hr]\n`;
+      cls += `[b]${author}[/b] [b]${date}[/b]\n\n${ze_HTML_to_BBcode(html, false)}\n\n[hr]\n`;
     });
 
     taRaw.value = raw.trim();
